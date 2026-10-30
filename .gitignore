@@ -1,0 +1,4 @@
+# Nintendo and hack-author material: never commit or publish these.
+*.z64
+build/
+third_party/
