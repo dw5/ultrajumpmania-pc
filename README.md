@@ -1,6 +1,6 @@
 # Ultra Jump Mania: native PC port
 
-Runs the Super Mario 64 hack *Ultra Jump Mania - Simpleflip Island* (Superstupidy) natively on Linux, with no emulator. You play as Tari.
+Runs the Super Mario 64 hack *Ultra Jump Mania - Simpleflip Island* (Superstupidy) natively on Linux, with no emulator. A Windows build is possible but takes manual steps. You play as Tari.
 
 | Part | Where | Source |
 |---|---|---|
@@ -43,6 +43,13 @@ tools/play.sh              # play
 ```
 
 Anything running in `mr64` can then open windows on your desktop and use your audio. To undo it: `incus config device remove mr64 gpu wayland pulse`.
+
+## Windows
+The scripts here only build on Linux. There is no Windows build script yet, but a build made by cross-compiling on Linux has been run under Wine, though not on real Windows. After `tools/build.sh`, it took these steps:
+
+1. Install `mingw-w64`, and get the SDL2, GLEW and zlib `mingw64` packages from [MSYS2](https://repo.msys2.org/mingw/mingw64/) to compile against.
+2. In a copy of `third_party/sm64coopdx`, run `make WINDOWS_BUILD=1 CROSS=x86_64-w64-mingw32- TARGET_BITS=64 TARGET_ARCH=x86-64 DISCORD_SDK=0 COOPNET=0`. This needs the POSIX-threads compilers, a `x86_64-w64-mingw32-sdl2-config` script for the MSYS2 SDL2, and small stand-ins for `ftello64`, `fseeko64` and `isblank`, which that SDL2 expects.
+3. Next to `sm64coopdx.exe`, put `lang`, `palettes`, `dynos` and `mods` from the build folder. Pass `--savepath` a `user` folder holding `baserom.us.z64`, a `mods` folder with `ultra jump mania` and `ujm-controls`, and an `sm64config.txt` with the lines `enable-mod: ujm-controls` and `enable-mod: ultra jump mania`. Without those lines, the first launch shows the vanilla game.
 
 ## Controls
 Keyboard defaults, which you can change in the game's options:
