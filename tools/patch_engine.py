@@ -533,6 +533,19 @@ PATCHES['src/game/mario.c'] += [
      '    pos[0] = collisionData->x;\n'),
 ]
 
+# While flying, the camera's floor-based height pulls it back down, so it would be left far below a high player.
+# Keep it at a fixed distance instead, in whichever direction the camera buttons have turned it.
+PATCHES['src/game/camera.c'].append(
+    ('    update_lakitu(c);\n\n    gLakituState.lastFrameAction = sMarioCamState->action;\n',
+     '    if (gMarioStates[0].action == ACT_DEBUG_FREE_MOVE) {\n'
+     '        f32 *fly = gMarioStates[0].pos;\n'
+     '        s16 flyYaw = atan2s(c->pos[2] - fly[2], c->pos[0] - fly[0]);\n'
+     '        vec3f_set(c->pos, fly[0] + 1000.0f * sins(flyYaw), fly[1] + 300.0f, fly[2] + 1000.0f * coss(flyYaw));\n'
+     '        vec3f_set(c->focus, fly[0], fly[1] + 100.0f, fly[2]);\n'
+     '    }\n\n'
+     '    update_lakitu(c);\n\n    gLakituState.lastFrameAction = sMarioCamState->action;\n'),
+)
+
 for name, edits in PATCHES.items():
     path = os.path.join(engine, name)
     src = open(path).read()

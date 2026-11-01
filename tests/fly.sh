@@ -13,6 +13,6 @@ stdbuf -oL ./sm64coopdx --windowed --width 640 --height 480 --skip-update-check 
 sleep 25; xdotool keydown l; sleep 0.2; xdotool keyup l; sleep 25
 import -window root "$OUT/z.png"; xdotool keydown Shift_L; sleep 0.2; xdotool keyup Shift_L; sleep 1
 import -window root "$OUT/y.png"; xdotool keydown w; sleep 0.5; import -window root "$OUT/a.png"; sleep 0.5; import -window root "$OUT/b.png"; xdotool keyup w; sleep 2; import -window root "$OUT/c.png"
-xdotool keydown d; sleep 1; xdotool keyup d; xdotool keydown l; sleep 1; xdotool keyup l; sleep 2; import -window root "$OUT/d.png"
-grep "^FLY" "$OUT/port.log" | awk '{print $4}' | tr '\n' ' '; echo
+xdotool keydown d; sleep 1; xdotool keyup d; xdotool keydown l; sleep 8; xdotool keyup l; sleep 2; import -window root "$OUT/d.png"
+grep "^FLY" "$OUT/port.log" | awk '{print $4 "@" $7}' | tr '\n' ' '; echo
 cd "$OUT"; montage z.png y.png a.png b.png c.png d.png -tile 6x1 -geometry 160x120+1+1 sheet.png
