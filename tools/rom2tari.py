@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
-"""Export the hack's player model from the ROM as a DynOS actor (actors/mario)."""
+"""Export the hack's changed models from the ROM as DynOS actors."""
 import os, re, struct, sys, zlib
 
 SEG4 = 0x11a35b8
 SEG4_END = 0x11fff00
 VAN_SEG17 = 0x1279b0
 MODEL_CMD = 0x2abce0
+
+# Folder, builtin geo it overrides, geo address, segment bases in the ROM.
+EXPORTS = [
+    ('mario', 'mario_geo', None, {0x04: SEG4}),
+    ('goomba', 'goomba_geo', 0x0400002c, {0x04: SEG4}),
+    ('ujm_star', 'star_geo', 0x16000ea0, {0x16: 0x218da0, 0x03: 0xab2450}),
+    ('ujm_transparent_star', 'transparent_star_geo', 0x16000f6c, {0x16: 0x218da0, 0x03: 0xab2450}),
+]
+SEGS = {}
 
 CC = ['COMBINED', 'TEXEL0', 'TEXEL1', 'PRIMITIVE', 'SHADE', 'ENVIRONMENT', '1', 'NOISE', '0']
 CC_B = ['COMBINED', 'TEXEL0', 'TEXEL1', 'PRIMITIVE', 'SHADE', 'ENVIRONMENT', 'CENTER', 'K4', '0']
@@ -18,7 +27,7 @@ AC_C = ['LOD_FRACTION', 'TEXEL0', 'TEXEL1', 'PRIMITIVE', 'SHADE', 'ENVIRONMENT',
 
 def u32(r, p): return struct.unpack('>I', r[p:p + 4])[0]
 def s16(r, p): return struct.unpack('>h', r[p:p + 2])[0]
-def off(a): return SEG4 + (a & 0xffffff)
+def off(a): return SEGS[a >> 24] + (a & 0xffffff)
 
 
 def png(path, w, h, rgba):
@@ -70,10 +79,13 @@ def decode(r, a, fmt, siz, w, h, pal):
 
 
 class Model:
-    def __init__(self, rom, outdir):
-        self.r, self.out = rom, outdir
+    def __init__(self, rom, outdir, root_name):
+        self.r, self.out, self.root_name = rom, outdir, root_name
         self.gfx, self.vtx, self.lights, self.tex = {}, {}, {}, {}
         self.geo, self.funcs = {}, {}
+        # Texture state carries across calls, since a parent list can load for its children.
+        self.pend = self.pal = self.load = self.size = None
+        self.tile = {}
 
     def tex_name(self, a, fmt, siz, w, h, pal):
         key = (a, pal)
@@ -97,13 +109,29 @@ class Model:
         self.vtx[k] = f'tari_vtx_{a & 0xffffff:06x}_{n}'
         return self.vtx[k]
 
+    def emit_texture(self, lines):
+        t, ws, hs = self.size
+        w, ht = ws + 1, hs + 1
+        fmt, siz, _, _, tl = self.tile[t]
+        cmt, maskt, shiftt = (tl >> 18) & 3, (tl >> 14) & 15, (tl >> 10) & 15
+        cms, masks, shifts = (tl >> 8) & 3, (tl >> 4) & 15, tl & 15
+        n = self.tex_name(self.load[0], fmt, siz, w, ht, self.pal if fmt == 2 else 0)
+        lines += [f'gsDPSetTextureImage(0, 2, 1, {n})',
+                  'gsDPTileSync()',
+                  'gsDPSetTile(0, 2, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0)',
+                  'gsDPLoadSync()',
+                  f'gsDPLoadBlock(7, 0, 0, {w * ht - 1}, {min(2047, (2047 + max(1, w * 2 // 8)) // max(1, w * 2 // 8))})',
+                  'gsDPPipeSync()',
+                  f'gsDPSetTile(0, 2, {(w * 2 + 7) // 8}, 0, {t}, 0, {cmt}, {maskt}, {shiftt}, {cms}, {masks}, {shifts})',
+                  f'gsDPSetTileSize({t}, 0, 0, {(w - 1) << 2}, {(ht - 1) << 2})']
+
     def dl(self, a):
+        if a == 0:
+            return 'NULL'
         if a in self.gfx:
             return f'tari_dl_{a & 0xffffff:06x}'
         self.gfx[a] = lines = []
         r, p = self.r, off(a)
-        pend = pal = load = None
-        tile = {}
         while True:
             h, l = u32(r, p), u32(r, p + 4)
             c = h >> 24
@@ -135,30 +163,23 @@ class Model:
             elif c == 0xe6 or c == 0xe8:
                 pass
             elif c == 0xfd:
-                pend = (l, (h >> 21) & 7, (h >> 19) & 3)
+                self.pend = (l, (h >> 21) & 7, (h >> 19) & 3)
             elif c == 0xf0:
-                pal, pend = pend[0], None
+                self.pal, self.pend = self.pend[0], None
             elif c == 0xf3:
-                load, pend = pend, None
+                self.load, self.pend = self.pend, None
+                # Vanilla-style lists set the tile size first, in the parent list.
+                if self.size and 0xf2 not in (r[p + i * 8] for i in range(4)):
+                    self.emit_texture(lines)
             elif c == 0xf5:
                 t = (l >> 24) & 7
                 if t != 7:
-                    tile[t] = ((h >> 21) & 7, (h >> 19) & 3, (l >> 20) & 15, (l >> 14) & 15 if 0 else 0, l)
+                    self.tile[t] = ((h >> 21) & 7, (h >> 19) & 3, (l >> 20) & 15, (l >> 14) & 15 if 0 else 0, l)
             elif c == 0xf2:
                 t = (l >> 24) & 7
-                w, ht = (((l >> 12) & 0xfff) >> 2) + 1, ((l & 0xfff) >> 2) + 1
-                fmt, siz, _, _, tl = tile[t]
-                cmt, maskt, shiftt = (tl >> 18) & 3, (tl >> 14) & 15, (tl >> 10) & 15
-                cms, masks, shifts = (tl >> 8) & 3, (tl >> 4) & 15, tl & 15
-                n = self.tex_name(load[0], fmt, siz, w, ht, pal if fmt == 2 else 0)
-                lines += [f'gsDPSetTextureImage(0, 2, 1, {n})',
-                          'gsDPTileSync()',
-                          'gsDPSetTile(0, 2, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0)',
-                          'gsDPLoadSync()',
-                          f'gsDPLoadBlock(7, 0, 0, {w * ht - 1}, {min(2047, (2047 + max(1, w * 2 // 8)) // max(1, w * 2 // 8))})',
-                          'gsDPPipeSync()',
-                          f'gsDPSetTile(0, 2, {(w * 2 + 7) // 8}, 0, {t}, 0, {cmt}, {maskt}, {shiftt}, {cms}, {masks}, {shifts})',
-                          f'gsDPSetTileSize({t}, 0, 0, {(w - 1) << 2}, {(ht - 1) << 2})']
+                self.size = (t, ((l >> 12) & 0xfff) >> 2, (l & 0xfff) >> 2)
+                if self.load:
+                    self.emit_texture(lines)
             elif c == 0xba:
                 if (h & 0xffff) != 0x0e02:
                     raise SystemExit(f'setothermode_h {hex(h)}')
@@ -193,7 +214,7 @@ class Model:
         return f'tari_dl_{a & 0xffffff:06x}'
 
     def geo_name(self, a):
-        return 'mario_geo' if a == self.root else f'tari_geo_{a & 0xffffff:06x}'
+        return self.root_name if a == self.root else f'tari_geo_{a & 0xffffff:06x}'
 
     def walk(self, a):
         if a in self.geo:
@@ -233,6 +254,12 @@ class Model:
             elif c == 0x13:
                 d = u32(r, p + 8)
                 o.append(f'GEO_ANIMATED_PART({x}, {s16(r, p + 2)}, {s16(r, p + 4)}, {s16(r, p + 6)}, {self.dl(d) if d else 0})'); p += 12
+            elif c == 0x14:
+                v = [s16(r, p + i) for i in (2, 4, 6)]; p += 8
+                if x & 0x80:
+                    o.append(f'GEO_BILLBOARD_WITH_PARAMS_AND_DL({x & 15}, {v[0]}, {v[1]}, {v[2]}, {self.dl(u32(r, p))})'); p += 4
+                else:
+                    o.append(f'GEO_BILLBOARD_WITH_PARAMS({x & 15}, {v[0]}, {v[1]}, {v[2]})')
             elif c == 0x15:
                 o.append(f'GEO_DISPLAY_LIST({x}, {self.dl(u32(r, p + 4))})'); p += 8
             elif c == 0x16:
@@ -253,6 +280,7 @@ class Model:
 
 # Engine geo functions in the US ROM (sm64 decomp names).
 GEO_FUNCS = {
+    0x8029db48: 'geo_switch_anim_state',
     0x80277d6c: 'geo_mirror_mario_backface_culling',
     0x802770a4: 'geo_mirror_mario_set_alpha',
     0x80277150: 'geo_switch_mario_stand_run',
@@ -279,15 +307,11 @@ def check_funcs(van, source):
         raise SystemExit('vanilla geo table mismatch')
 
 
-def main():
-    hack, van_path, source, out = sys.argv[1:5]
+def export(r, names, out, folder, root_name, root):
     os.makedirs(out, exist_ok=True)
-    r, van = open(hack, 'rb').read(), open(van_path, 'rb').read()
-    m = Model(r, out)
-    m.root = u32(r, MODEL_CMD + 4)
+    m = Model(r, out, root_name)
+    m.root = root if root is not None else u32(r, MODEL_CMD + 4)
     m.walk(m.root)
-    check_funcs(van, source)
-    names = GEO_FUNCS
     missing = [hex(f) for f in m.funcs if f not in names]
     if missing:
         raise SystemExit(f'unnamed geo functions: {missing}')
@@ -301,7 +325,7 @@ def main():
             f.write('};\n\n')
     with open(os.path.join(out, 'texture.inc.c'), 'w') as f:
         for n in m.tex.values():
-            f.write(f'ALIGNED8 static const Texture {n}[] = {{\n#include "actors/mario/{n}.rgba16.inc.c"\n}};\n\n')
+            f.write(f'ALIGNED8 static const Texture {n}[] = {{\n#include "actors/{folder}/{n}.rgba16.inc.c"\n}};\n\n')
     with open(os.path.join(out, 'model.inc.c'), 'w') as f:
         for n, v in m.lights.items():
             f.write(f'static const Lights1 {n} = gdSPDefLights1(\n    {v[0]}, {v[1]}, {v[2]},\n    {v[3]}, {v[4]}, {v[5]}, {v[6]}, {v[7]}, {v[8]}\n);\n\n')
@@ -319,9 +343,18 @@ def main():
             for line in lines:
                 f.write(f'    {line},\n')
             f.write('};\n\n')
-    print(f'geo blocks {len(m.geo)}, display lists {len(m.gfx)}, vertex buffers {len(m.vtx)}, '
+    print(f'{folder}: geo blocks {len(m.geo)}, display lists {len(m.gfx)}, vertex buffers {len(m.vtx)}, '
           f'lights {len(m.lights)}, textures {len(m.tex)}')
-    print({hex(k): names[k] for k in m.funcs})
+
+
+def main():
+    hack, van_path, source, out = sys.argv[1:5]
+    r, van = open(hack, 'rb').read(), open(van_path, 'rb').read()
+    check_funcs(van, source)
+    for folder, name, root, segs in EXPORTS:
+        SEGS.clear()
+        SEGS.update(segs)
+        export(r, GEO_FUNCS, os.path.join(out, folder), folder, name, root)
 
 
 main()
